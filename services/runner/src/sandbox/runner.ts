@@ -1,4 +1,6 @@
 import Docker from "dockerode";
+import http from "http";
+import net from "net";
 import { PassThrough } from "stream";
 import { RunInSandboxOptions, SandboxResult, SandboxOutcome } from "./types";
 import { compareOutput } from "./comparer";
@@ -31,6 +33,57 @@ const SANDBOX_CONFIG = {
     ],
   },
 } as const;
+
+async function attachStdin(docker: Docker, containerId: string): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const isWindows = process.platform === "win32";
+    const modem = docker.modem as unknown as {
+      host?: string;
+      port?: number;
+    };
+    const host = modem?.host;
+    const port = modem?.port;
+    const socketPath =
+      host && port
+        ? undefined
+        : isWindows
+        ? "//./pipe/docker_engine"
+        : "/var/run/docker.sock";
+
+    const reqOptions: http.RequestOptions = {
+      method: "POST",
+      path: `/containers/${containerId}/attach?stream=1&stdin=1`,
+      headers: {
+        Host: "docker",
+        Upgrade: "tcp",
+        Connection: "Upgrade",
+      },
+    };
+
+    if (socketPath) {
+      reqOptions.socketPath = socketPath;
+    } else if (host && port) {
+      reqOptions.host = host;
+      reqOptions.port = port;
+    }
+
+    const req = http.request(reqOptions);
+
+    req.on("upgrade", (_res, socket, head) => {
+      if (head && head.length > 0) {
+        socket.unshift(head);
+      }
+      resolve(socket as net.Socket);
+    });
+
+    req.on("error", (err) => {
+      reject(err);
+    });
+
+    // req.end() flushes HTTP upgrade headers with 0 body bytes
+    req.end();
+  });
+}
 
 export async function runInSandbox(
   options: RunInSandboxOptions
@@ -96,17 +149,19 @@ export async function runInSandbox(
       },
     });
 
-    // 1. Attach stdin hijack stream before container starts
-    const stdinStream = await container.attach({
-      stream: true,
-      stdin: true,
-      stdout: false,
-      stderr: false,
-      hijack: true,
-    });
+    // 1. Attach stdin stream cleanly via Docker HTTP upgrade API.
+    // We avoid container.attach({ hijack: true }) because docker-modem sends the options
+    // object as an HTTP POST body, which Docker daemon forwards into the container's stdin.
+    const stdinStream = await attachStdin(docker, container.id);
     stdinStream.on("error", () => {
       // Ignore stdin errors if container terminates quickly
     });
+
+    // Write stdin input and close stdin BEFORE starting the container
+    if (options.stdin !== undefined) {
+      stdinStream.write(options.stdin);
+    }
+    stdinStream.end();
 
     await container.start();
 
@@ -171,13 +226,7 @@ export async function runInSandbox(
       logStream.on("error", () => resolve());
     });
 
-    // 4. Send stdin input to container and close stdin
-    if (options.stdin !== undefined) {
-      stdinStream.write(options.stdin);
-    }
-    stdinStream.end();
-
-    // 5. Wait for container to exit and log stream to complete
+    // 4. Wait for container to exit and log stream to complete
     const waitPromise = container.wait();
 
     // Wait for container exit; give logStream up to 500ms to flush after exit

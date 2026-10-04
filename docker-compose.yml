@@ -105,6 +105,39 @@ services:
       kafka-init:
         condition: service_completed_successfully
 
+  runner:
+    build:
+      context: .
+      dockerfile: services/runner/Dockerfile
+    environment:
+      KAFKA_BROKERS: "kafka:9092"
+      SUBMISSION_GRPC_ADDR: "submission-api:50051"
+      RUNNER_SESSION_TIMEOUT_MS: "10000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-999}"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      submission-api:
+        condition: service_started
+
+  result-writer:
+    build:
+      context: .
+      dockerfile: services/submission-service/Dockerfile
+    command: ["node", "services/submission-service/dist/result-writer-main.js"]
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER:-bytearena}:${POSTGRES_PASSWORD:-bytearena}@postgres:5432/${POSTGRES_DB:-bytearena}"
+      KAFKA_BROKERS: "kafka:9092"
+      RUNNER_SESSION_TIMEOUT_MS: "10000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:
 
@@ -114,14 +147,6 @@ volumes:
 #
 #  result-writer:                        # Phase 5 (same image, different command)
 #    command: ["node", "services/submission-service/dist/result-writer.js"]
-#
-#  runner:                               # Phase 4
-#    build: { context: ., dockerfile: services/runner/Dockerfile }
-#    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]   # ONLY the runner gets this
-#    group_add: ["${DOCKER_GID:-999}"]   # runner runs non-root: needs the host docker group id
-#                                        # (find it with: stat -c '%g' /var/run/docker.sock)
-#    environment: { RUNNER_SESSION_TIMEOUT_MS: "10000" }
-#    # Scale test: docker compose up -d --scale runner=2
 #
 #  gateway:                              # Phase 6
 #    build: { context: ., dockerfile: services/gateway/Dockerfile }

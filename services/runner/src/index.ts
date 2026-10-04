@@ -3,6 +3,7 @@ import Docker from "dockerode";
 import { cleanupOrphanContainers } from "./sandbox";
 
 export * from "./sandbox";
+export * from "./worker";
 
 export async function initRunner(): Promise<void> {
   logger.info("Runner service scaffold initialized");

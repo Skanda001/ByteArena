@@ -32,8 +32,10 @@ export function toProtoLanguage(lang: LanguageType): ProtoLanguage {
 export function fromProtoLanguage(protoLang: ProtoLanguage | string): LanguageType {
   switch (protoLang) {
     case "LANGUAGE_PYTHON":
+    case "PYTHON":
       return "PYTHON";
     case "LANGUAGE_JAVASCRIPT":
+    case "JAVASCRIPT":
       return "JAVASCRIPT";
     default:
       throw new Error(`Unsupported proto language: ${protoLang}`);

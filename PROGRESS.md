@@ -3,9 +3,9 @@
 > The builder updates this at the end of EVERY session. This file is how work continues across sessions and accounts.
 
 ## Current status
-- **Current phase:** 4
-- **Last session summary:** Completed Phase 3. Implemented sandbox execution library using `dockerode` in `services/runner/src/sandbox/` enforcing all non-negotiable security flags (`NetworkMode: "none"`, `MemorySwap === Memory`, `NanoCpus: 500_000_000`, `PidsLimit: 64`, `ReadonlyRootfs: true`, tmpfs `/tmp` `rw,noexec,nosuid,size=16m`, `CapDrop: ["ALL"]`, `SecurityOpt: ["no-new-privileges"]`, user `65534:65534`, working dir `/tmp`, label `bytearena.submission`). Passing code via `SUBMISSION_CODE` env var stripped before execution. Demuxed stdout/stderr with live byte counting to enforce 64 KiB output limit (`OUTPUT_LIMIT_EXCEEDED`). Wall-clock timeout with startup allowance (`TIME_LIMIT_EXCEEDED`). Guaranteed container removal in `finally`. Output normalisation per AGENTS.md rule. All 16 Phase 3 test cases passed.
-- **Next step:** Start Phase 4 in PLAN.md (Runner worker)
+- **Current phase:** 6
+- **Last session summary:** Completed Phase 5. Result writer (`services/submission-service/src/result-writer.ts`) fully implemented, containerised, and tested. Discovered and fixed subtle dockerode/docker-modem bug where `container.attach` sent options JSON as body into container stdin; implemented clean HTTP upgrade attach in `attachStdin` that sends zero body bytes. Verified that `smoke.ts` runs 4 submissions to expected verdicts (`ACCEPTED`, `WRONG_ANSWER`, `TIME_LIMIT_EXCEEDED`, `RUNTIME_ERROR`), `submissions` and `test_results` tables in Postgres are correctly populated, and resetting `result-writer-group` offset to earliest replays all events with zero duplicate rows and zero state flips. All 25 unit/integration tests passing.
+- **Next step:** Start Phase 6 in PLAN.md (GraphQL gateway with live subscriptions)
 
 ## Checklist (tick only after running the "Done when" checks)
 
@@ -13,8 +13,8 @@
 - [x] Phase 1: Submission service, gRPC and transactional create
 - [x] Phase 2: Outbox publisher
 - [x] Phase 3: Sandbox library
-- [ ] Phase 4: Runner worker
-- [ ] Phase 5: Result writer
+- [x] Phase 4: Runner worker
+- [x] Phase 5: Result writer
 - [ ] Phase 6: GraphQL gateway with live subscriptions
 - [ ] Phase 7: Crash recovery and hardening
 - [ ] Phase 8: CI, benchmarks, docs, demo
@@ -154,7 +154,56 @@
   - Windows named pipe does not support TCP half-close on hijacked duplex streams; attaching for stdin-only before container start and streaming container logs via `container.logs({ follow: true })` demuxed with `docker.modem.demuxStream` solved stdout/stderr truncation and byte counting across both Windows development and Linux production environments.
   - Wall-clock timer must be started after `await container.start()` completes so `container.kill()` reliably targets a running container rather than a container in transition.
 - Next:
-  - Phase 4: Runner worker (`services/runner/src/main.ts`) - consume queued submissions, gRPC `GetJudgingJob`, judge per-test via sandbox, publish events (`JUDGING_STARTED`, `TEST_RESULT`, `FINAL_VERDICT`), manual offset commits.
+  - Phase 5: Result writer — consume `submissions.results`, persist per-test verdicts (`test_results` table) and final verdict (`submissions.status`), with idempotency on duplicate judging runs.
+
+### Session 5 (2026-10-04) — Phase 4: Runner Worker
+- Did:
+  - Implemented `RunnerWorker` class (`services/runner/src/worker.ts`): KafkaJS consumer (`autoCommit: false`, manual offset commit after `FINAL_VERDICT`), gRPC `GetJudgingJob`, `alreadyFinal` skip, `JUDGING_STARTED` → per-test `runInSandbox()` → `TEST_RESULT` × N → `FINAL_VERDICT`, heartbeat between test cases, 3-retry exponential backoff (1s, 2s) for infra errors, DLQ routing on permanent failure.
+  - Implemented `services/runner/src/main.ts` — entrypoint with SIGTERM/SIGINT graceful shutdown.
+  - Created multi-stage non-root `services/runner/Dockerfile`.
+  - Added `runner` service to `docker-compose.yml` with `/var/run/docker.sock` volume and `group_add: [DOCKER_GID]`.
+  - Fixed `DOCKER_GID` to `0` (Docker Desktop socket is owned by root/GID 0 on Windows).
+  - Fixed stdin ordering bug: stdin must be written and stream closed **before** `container.start()` (not after) to prevent `EOFError`/RUNTIME_ERROR on fast-starting containers — root cause of test-3 RUNTIME_ERROR failure.
+- Verified with:
+  - `npx tsx scripts/smoke.ts` (1 replica): All 4 submissions received correct verdicts:
+    - `ok.py` → ACCEPTED (5/5 tests)
+    - `wrong.py` → WRONG_ANSWER (5/5 tests)
+    - `infinite.py` → TIME_LIMIT_EXCEEDED (5/5 tests at ~2600ms each)
+    - `runtime_error.py` → RUNTIME_ERROR (5/5 tests)
+  - `docker compose up -d --scale runner=2`: Both replicas joined same consumer group (`runner-group`), split partitions, processed messages without errors or duplicates. Smoke test passed again with 2 replicas.
+  - `npm run lint`, `npm run typecheck`, `npm run build`: All passed with 0 errors.
+- Problems / decisions:
+  - stdin-before-start fix: On Windows Docker Desktop, the named pipe buffer is flushed to the container process before it starts if written before `container.start()`. Writing after start caused a race condition where `input()` was called before stdin data was available, causing `EOFError` and RUNTIME_ERROR on hidden test cases.
+- Next:
+  - Phase 5: Result writer.
+
+### Session 6 (2026-10-04) — Phase 5: Result Writer
+- Did:
+  - Implemented `ResultWriter` class (`services/submission-service/src/result-writer.ts`): KafkaJS consumer in group `result-writer-group`, `autoCommit: false` (manual offset commit after DB write), subscribing to `submissions.results` from beginning.
+  - Implemented strict idempotency per ARCHITECTURE.md:
+    - `JUDGING_STARTED`: `UPDATE submissions SET status='JUDGING' WHERE id=$1 AND status='QUEUED'`
+    - `TEST_RESULT`: `INSERT INTO test_results (submission_id, test_index, verdict, time_ms, memory_kb, is_sample) VALUES (...) ON CONFLICT (submission_id, test_index) DO NOTHING`
+    - `FINAL_VERDICT`: `UPDATE submissions SET status=$2, verdict=$3, judged_at=now() WHERE id=$1 AND status IN ('QUEUED', 'JUDGING')` (status `SYSTEM_ERROR` for `INTERNAL_ERROR`, `COMPLETED` otherwise; first final verdict wins)
+  - Created entrypoint `services/submission-service/src/result-writer-main.ts` with graceful shutdown (`SIGTERM`/`SIGINT`).
+  - Added `result-writer` service to `docker-compose.yml`.
+  - Created integration test suite `services/submission-service/src/result-writer.test.ts` testing all 3 events and idempotency on duplicate events.
+  - Discovered and diagnosed deep dockerode/docker-modem bug: `container.attach` in `dockerode` passes the options object to `docker-modem`, which stringifies it as an HTTP POST body; Docker daemon's upgraded connection forwards body bytes into container stdin (producing `ValueError: invalid literal for int() with base 10: '{"stream":true...}'`). Implemented clean `attachStdin` using native `http.request` HTTP Upgrade headers (`Upgrade: tcp`, `Connection: Upgrade`, `req.end()`) with zero body bytes.
+- Verified with:
+  - `npx tsx scripts/smoke.ts`: All 4 test solutions judged with 100% correct verdicts (`ACCEPTED`, `WRONG_ANSWER`, `TIME_LIMIT_EXCEEDED`, `RUNTIME_ERROR`).
+  - `psql` verification:
+    - `SELECT id, status, verdict FROM submissions`: All 4 submissions have `status = 'COMPLETED'` and correct verdicts.
+    - `SELECT submission_id, count(*) FROM test_results`: Exactly 5 rows (`{1,2,3,4,5}`) per submission.
+  - Replay verification:
+    - Stopped `result-writer`, executed `kafka-consumer-groups.sh --group result-writer-group --reset-offsets --to-earliest --execute --topic submissions.results`, restarted `result-writer`.
+    - Confirmed all results reprocessed, `submissions` status and verdicts remained unchanged, and `test_results` count remained exactly 5 per submission (zero duplicates, zero state flips).
+  - `npx vitest run`: All 5 test suites (25 tests) passed across monorepo in 13.9s.
+  - `npm run typecheck` and `npm run lint`: Passed with 0 errors.
+- Problems / decisions:
+  - dockerode body leak: Fixed by bypassing `dockerode.attach` and using direct HTTP upgrade request `POST /containers/${id}/attach?stream=1&stdin=1` with zero body bytes via `req.end()`.
+  - socketPath in runner: Inside Linux runner container, socket path is `/var/run/docker.sock` (on Windows host `//./pipe/docker_engine`). Avoided calling `modem.socketPath()` which returns an async Promise in some docker-modem versions.
+- Next:
+  - Phase 6: GraphQL gateway with live subscriptions (`services/gateway`).
+
 
 ## Measured numbers (only real, measured values)
 

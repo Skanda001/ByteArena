@@ -7,7 +7,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "start": "node dist/server.js",
-    "start:publisher": "node dist/outbox-publisher.js"
+    "start:publisher": "node dist/outbox-publisher.js",
+    "start:result-writer": "node dist/result-writer-main.js"
   },
   "dependencies": {
     "@bytearena/shared": "*",
