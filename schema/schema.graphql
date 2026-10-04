@@ -1,0 +1,118 @@
+# GraphQL contract for ByteArena.
+# Served by services/gateway (graphql-yoga). Subscriptions use SSE (built into Yoga).
+# Enum values here are the PUBLIC names; see docs/ARCHITECTURE.md "Enum mapping" for proto/DB names.
+
+enum Language {
+  PYTHON
+  JAVASCRIPT
+}
+
+enum SubmissionStatus {
+  QUEUED
+  JUDGING
+  COMPLETED
+  SYSTEM_ERROR
+}
+
+enum Verdict {
+  ACCEPTED
+  WRONG_ANSWER
+  RUNTIME_ERROR
+  TIME_LIMIT_EXCEEDED
+  MEMORY_LIMIT_EXCEEDED
+  OUTPUT_LIMIT_EXCEEDED
+  INTERNAL_ERROR
+}
+
+enum ProgressEventType {
+  JUDGING_STARTED
+  TEST_RESULT
+  FINAL_VERDICT
+}
+
+type SampleCase {
+  input: String!
+  expectedOutput: String!
+}
+
+type Problem {
+  id: ID!
+  title: String!
+  statement: String!
+  timeLimitMs: Int!
+  memoryLimitMb: Int!
+  "Sample cases only. Hidden test cases are never exposed."
+  samples: [SampleCase!]!
+}
+
+type TestResult {
+  testIndex: Int!
+  verdict: Verdict!
+  timeMs: Int!
+  "Best effort. 0 means unknown."
+  memoryKb: Int!
+  isSample: Boolean!
+}
+
+type Submission {
+  id: ID!
+  problemId: ID!
+  language: Language!
+  handle: String!
+  status: SubmissionStatus!
+  "Null until the submission is final."
+  verdict: Verdict
+  createdAt: String!
+  judgedAt: String
+  results: [TestResult!]!
+}
+
+"One live progress event. Fields not relevant to the event type are null."
+type SubmissionEvent {
+  submissionId: ID!
+  type: ProgressEventType!
+  "Set for JUDGING_STARTED."
+  totalTests: Int
+  "Set for TEST_RESULT."
+  testIndex: Int
+  "Set for TEST_RESULT and FINAL_VERDICT."
+  verdict: Verdict
+  timeMs: Int
+  memoryKb: Int
+  isSample: Boolean
+}
+
+input SubmitSolutionInput {
+  problemId: ID!
+  language: Language!
+  code: String!
+  "1 to 32 characters: letters, digits, underscore, hyphen. No accounts in v1: this is just a label."
+  handle: String!
+  "Optional. Retrying with the same (handle, idempotencyKey) returns the same submission."
+  idempotencyKey: String
+}
+
+type SubmitSolutionPayload {
+  submission: Submission!
+  "False when an earlier submission with the same idempotency key was returned."
+  created: Boolean!
+}
+
+type Query {
+  problems: [Problem!]!
+  problem(id: ID!): Problem
+  submission(id: ID!): Submission
+  submissions(handle: String!, limit: Int = 20): [Submission!]!
+}
+
+type Mutation {
+  submitSolution(input: SubmitSolutionInput!): SubmitSolutionPayload!
+}
+
+type Subscription {
+  """
+  Live per-test progress. Replays already-finished tests first, then streams new events,
+  and completes after FINAL_VERDICT.
+  """
+  submissionProgress(submissionId: ID!): SubmissionEvent!
+}

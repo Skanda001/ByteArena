@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package bytearena.v1;
+
+// ---------- Enums ----------
+
+enum Language {
+  LANGUAGE_UNSPECIFIED = 0;
+  LANGUAGE_PYTHON = 1;
+  LANGUAGE_JAVASCRIPT = 2;
+}
+
+enum SubmissionStatus {
+  SUBMISSION_STATUS_UNSPECIFIED = 0;
+  STATUS_QUEUED = 1;
+  STATUS_JUDGING = 2;
+  STATUS_COMPLETED = 3;
+  STATUS_SYSTEM_ERROR = 4;
+}
+
+enum Verdict {
+  VERDICT_UNSPECIFIED = 0;
+  VERDICT_ACCEPTED = 1;
+  VERDICT_WRONG_ANSWER = 2;
+  VERDICT_RUNTIME_ERROR = 3;
+  VERDICT_TIME_LIMIT_EXCEEDED = 4;
+  VERDICT_MEMORY_LIMIT_EXCEEDED = 5;
+  VERDICT_OUTPUT_LIMIT_EXCEEDED = 6;
+  VERDICT_INTERNAL_ERROR = 7;
+}
+
+// ---------- Messages ----------
+
+message SampleCase {
+  string input = 1;
+  string expected_output = 2;
+}
+
+message Problem {
+  string id = 1;
+  string title = 2;
+  string statement = 3;
+  int32 time_limit_ms = 4;
+  int32 memory_limit_mb = 5;
+  repeated SampleCase samples = 6;  // only sample cases, never hidden ones
+}
+
+message TestResult {
+  int32 test_index = 1;
+  Verdict verdict = 2;
+  int32 time_ms = 3;      // 0 if unknown
+  int32 memory_kb = 4;    // 0 if unknown (best effort)
+  bool is_sample = 5;
+}
+
+message Submission {
+  string id = 1;
+  string problem_id = 2;
+  Language language = 3;
+  string handle = 4;
+  SubmissionStatus status = 5;
+  Verdict verdict = 6;               // VERDICT_UNSPECIFIED until final
+  string created_at = 7;             // RFC 3339
+  string judged_at = 8;              // RFC 3339, empty until final
+  repeated TestResult results = 9;
+}
+
+// A test case as given to the runner. Contains hidden data: internal use only.
+message JudgeTestCase {
+  int32 test_index = 1;
+  string input = 2;
+  string expected_output = 3;
+  bool is_sample = 4;
+}
+
+// ---------- Public-facing service (called by the gateway) ----------
+
+service SubmissionService {
+  rpc CreateSubmission(CreateSubmissionRequest) returns (CreateSubmissionResponse);
+  rpc GetSubmission(GetSubmissionRequest) returns (Submission);
+  rpc ListSubmissions(ListSubmissionsRequest) returns (ListSubmissionsResponse);
+  rpc ListProblems(ListProblemsRequest) returns (ListProblemsResponse);
+  rpc GetProblem(GetProblemRequest) returns (Problem);
+}
+
+message CreateSubmissionRequest {
+  string problem_id = 1;
+  Language language = 2;
+  string code = 3;
+  string handle = 4;
+  string idempotency_key = 5;  // optional, scoped per handle
+}
+
+message CreateSubmissionResponse {
+  Submission submission = 1;
+  bool created = 2;  // false if an existing submission was returned (idempotent replay)
+}
+
+message GetSubmissionRequest { string id = 1; }
+
+message ListSubmissionsRequest {
+  string handle = 1;
+  int32 limit = 2;
+}
+
+message ListSubmissionsResponse { repeated Submission submissions = 1; }
+
+message ListProblemsRequest {}
+message ListProblemsResponse { repeated Problem problems = 1; }
+message GetProblemRequest { string id = 1; }
+
+// ---------- Internal service (called by the runner only) ----------
+
+service JudgeService {
+  rpc GetJudgingJob(GetJudgingJobRequest) returns (GetJudgingJobResponse);
+}
+
+message GetJudgingJobRequest { string submission_id = 1; }
+
+message GetJudgingJobResponse {
+  bool already_final = 1;  // true if COMPLETED or SYSTEM_ERROR: the runner must skip it
+  string submission_id = 2;
+  string problem_id = 3;
+  Language language = 4;
+  string code = 5;
+  int32 time_limit_ms = 6;
+  int32 memory_limit_mb = 7;
+  repeated JudgeTestCase test_cases = 8;  // ordered by test_index
+}

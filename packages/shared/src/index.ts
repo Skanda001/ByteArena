@@ -1,0 +1,30 @@
+export * from "./config";
+export * from "./logger";
+export * from "./db";
+export * from "./kafka";
+export * from "./events";
+export * from "./enums";
+export * from "./grpc";
+
+// Re-export generated proto types
+export type * from "../generated/bytearena/v1/CreateSubmissionRequest";
+export type * from "../generated/bytearena/v1/CreateSubmissionResponse";
+export type * from "../generated/bytearena/v1/GetSubmissionRequest";
+export type * from "../generated/bytearena/v1/ListSubmissionsRequest";
+export type * from "../generated/bytearena/v1/ListSubmissionsResponse";
+export type * from "../generated/bytearena/v1/ListProblemsRequest";
+export type * from "../generated/bytearena/v1/ListProblemsResponse";
+export type * from "../generated/bytearena/v1/GetProblemRequest";
+export type * from "../generated/bytearena/v1/GetJudgingJobRequest";
+export type * from "../generated/bytearena/v1/GetJudgingJobResponse";
+export type * from "../generated/bytearena/v1/JudgeTestCase";
+export type * from "../generated/bytearena/v1/Submission";
+export type * from "../generated/bytearena/v1/Problem";
+export type * from "../generated/bytearena/v1/SampleCase";
+export type * from "../generated/bytearena/v1/TestResult";
+export type * from "../generated/bytearena/v1/Language";
+export type * from "../generated/bytearena/v1/SubmissionStatus";
+export type * from "../generated/bytearena/v1/Verdict";
+export type * from "../generated/bytearena/v1/SubmissionService";
+export type * from "../generated/bytearena/v1/JudgeService";
+export type * from "../generated/judge";

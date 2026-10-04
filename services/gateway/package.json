@@ -1,0 +1,23 @@
+{
+  "name": "@bytearena/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bytearena/shared": "*",
+    "@grpc/grpc-js": "^1.11.3",
+    "graphql": "^16.9.0",
+    "graphql-yoga": "^5.7.0",
+    "kafkajs": "^2.2.4",
+    "pino": "^9.4.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.0",
+    "typescript": "^5.6.0"
+  }
+}
