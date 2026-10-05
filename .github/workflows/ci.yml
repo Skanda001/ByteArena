@@ -36,7 +36,7 @@ jobs:
         run: npm run typecheck
 
       - name: Run Unit Tests
-        run: npx vitest run
+        run: npx vitest run services/runner/src/worker.test.ts
 
   integration:
     name: Docker Compose Integration & Smoke
@@ -84,6 +84,15 @@ jobs:
             fi
             sleep 2
           done
+
+      - name: Generate gRPC Proto Types
+        run: npm run proto:gen
+
+      - name: Build TypeScript Packages
+        run: npm run build
+
+      - name: Run Integration Tests
+        run: npx vitest run
 
       - name: Run Smoke Test
         run: bash scripts/smoke.sh
