@@ -26,6 +26,9 @@ jobs:
       - name: Generate gRPC Proto Types
         run: npm run proto:gen
 
+      - name: Build TypeScript Packages
+        run: npm run build
+
       - name: Run ESLint
         run: npm run lint
 
