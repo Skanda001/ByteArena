@@ -1,5 +1,5 @@
 /**
- * Output comparison rule per AGENTS.md:
+ * Output comparison rule:
  * Compare judge output to expected output after:
  * 1. normalising \r\n to \n
  * 2. trimming trailing whitespace on every line

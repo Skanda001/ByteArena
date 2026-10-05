@@ -128,7 +128,14 @@ export class GatewayServer {
     await this.kafkaBridge.start();
 
     const yoga = this.createYogaApp();
-    this.server = http.createServer(yoga);
+    this.server = http.createServer((req, res) => {
+      if (req.url === "/" || req.url === "") {
+        res.writeHead(302, { Location: "/graphql" });
+        res.end();
+        return;
+      }
+      yoga(req, res);
+    });
 
     await new Promise<void>((resolve, reject) => {
       this.server!.listen(this.port, () => {

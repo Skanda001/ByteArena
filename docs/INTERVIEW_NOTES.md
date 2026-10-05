@@ -20,7 +20,7 @@ So several publisher instances can take different batches without blocking or do
 Auto-commit could mark a message done before judging finished, so a crash would lose the submission. I commit only after `FINAL_VERDICT` is published. The price is that a crash causes a re-judge, which is why results are idempotent.
 
 **What if a runner dies mid-judging?**
-The offset was not committed, the consumer group rebalances after the session timeout, another runner gets the message, and judges it again. Duplicate `TEST_RESULT` events are dropped by the primary key. I measured recovery time with `scripts/chaos/kill-runner.sh` (quote the number from PROGRESS.md).
+The offset was not committed, the consumer group rebalances after the session timeout, another runner gets the message, and judges it again. Duplicate `TEST_RESULT` events are dropped by the primary key. I measured recovery time with `scripts/chaos/kill-runner.sh` (18.3s measured recovery time).
 
 **Why gRPC between services and GraphQL at the edge?**
 gRPC gives a typed, contract-first internal API (protobuf, HTTP/2). GraphQL gives clients flexible queries and subscriptions. The gateway translates between them.
@@ -57,4 +57,4 @@ Subscribe to the in-memory bus first, then fetch the DB snapshot, then stream li
 Stronger isolation (gVisor), compile-then-run languages, a leaderboard on a Redis sorted set, OpenTelemetry tracing across GraphQL, gRPC and Kafka headers, and CPU pinning for fairer timing.
 
 ## What not to claim
-Anything you did not measure: throughput, "scales to thousands", "secure against all attacks", "exactly-once". Use only numbers from `scripts/bench/` and `PROGRESS.md`.
+Anything you did not measure: throughput, "scales to thousands", "secure against all attacks", "exactly-once". Use only numbers measured from `scripts/bench/` and `README.md`.

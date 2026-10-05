@@ -103,7 +103,7 @@ One container per test case (simple, strong isolation, some startup cost; measur
 
 **Image:** `python:3.12-alpine`, `node:20-alpine` (pre-pulled; the runner never pulls at judge time).
 
-**HostConfig (all mandatory, see AGENTS.md):**
+**HostConfig (mandatory sandbox isolation settings):**
 ```
 NetworkMode: "none"
 Memory: limitMb*1024*1024, MemorySwap: same value (no swap)

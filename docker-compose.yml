@@ -1,14 +1,5 @@
-# ByteArena infrastructure.
-#
-# This file ships with the INFRASTRUCTURE services only (postgres, kafka, kafka-init).
-# The builder adds each application service in the phase that creates it
-# (templates at the bottom, commented out). Conventions for those services:
-#   - build context is the repo root (npm workspaces + packages/shared), dockerfile per service
-#   - config via environment variables; inside compose use the INTERNAL addresses:
-#       DATABASE_URL=postgres://bytearena:bytearena@postgres:5432/bytearena
-#       KAFKA_BROKERS=kafka:9092
-#       SUBMISSION_GRPC_ADDR=submission-api:50051
-#   - every service that can have a healthcheck gets one, and depends_on uses service_healthy
+# ByteArena compose configuration.
+# Services: postgres, kafka, kafka-init, submission-api, outbox-publisher, runner, result-writer, gateway.
 
 name: bytearena
 

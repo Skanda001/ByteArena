@@ -1,6 +1,6 @@
 # Architectural & Technical Decisions Log
 
-This file records any deviations, operational trade-offs, or configuration decisions made during implementation, as required by `AGENTS.md`.
+This file records any deviations, operational trade-offs, or configuration decisions made during implementation.
 
 ---
 
