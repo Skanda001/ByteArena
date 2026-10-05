@@ -3,9 +3,9 @@
 > The builder updates this at the end of EVERY session. This file is how work continues across sessions and accounts.
 
 ## Current status
-- **Current phase:** 6
-- **Last session summary:** Completed Phase 5. Result writer (`services/submission-service/src/result-writer.ts`) fully implemented, containerised, and tested. Discovered and fixed subtle dockerode/docker-modem bug where `container.attach` sent options JSON as body into container stdin; implemented clean HTTP upgrade attach in `attachStdin` that sends zero body bytes. Verified that `smoke.ts` runs 4 submissions to expected verdicts (`ACCEPTED`, `WRONG_ANSWER`, `TIME_LIMIT_EXCEEDED`, `RUNTIME_ERROR`), `submissions` and `test_results` tables in Postgres are correctly populated, and resetting `result-writer-group` offset to earliest replays all events with zero duplicate rows and zero state flips. All 25 unit/integration tests passing.
-- **Next step:** Start Phase 6 in PLAN.md (GraphQL gateway with live subscriptions)
+- **Current phase:** Completed (All Phases 0 through 8 complete!)
+- **Last session summary:** Completed Phase 8. Configured GitHub Actions CI workflow (`.github/workflows/ci.yml`) with lint, typecheck, unit tests, and integration smoke test. Created benchmark load generator (`scripts/bench/benchmark.ts` and `scripts/bench/run.sh`) and ran 50 concurrent submissions (concurrency 5, 250 docker sandbox executions total), achieving 100% completion rate (0 failures), p50 latency 18,340ms, p95 latency 27,284ms, throughput 0.26 sub/s (~1.30 sandbox containers/s). Verified end-to-end smoke test (4/4 test cases pass) and all 32 unit/integration tests with 0 lint/typecheck errors. Wrote comprehensive production-grade README.md with architecture diagrams, security boundary details, and strictly measured benchmark figures.
+- **Next step:** Project complete per specification; optional stretch goals (leaderboard, C++, gVisor).
 
 ## Checklist (tick only after running the "Done when" checks)
 
@@ -15,11 +15,12 @@
 - [x] Phase 3: Sandbox library
 - [x] Phase 4: Runner worker
 - [x] Phase 5: Result writer
-- [ ] Phase 6: GraphQL gateway with live subscriptions
-- [ ] Phase 7: Crash recovery and hardening
-- [ ] Phase 8: CI, benchmarks, docs, demo
+- [x] Phase 6: GraphQL gateway with live subscriptions
+- [x] Phase 7: Crash recovery and hardening
+- [x] Phase 8: CI, benchmarks, docs, demo
 
 ## Session notes
+
 
 ### Session 1 (2026-10-04)
 - Did:
@@ -204,12 +205,83 @@
 - Next:
   - Phase 6: GraphQL gateway with live subscriptions (`services/gateway`).
 
+### Session 7 (2026-10-04) — Phase 6: GraphQL Gateway with Live Subscriptions
+- Did:
+  - Implemented `RateLimiter` (`services/gateway/src/rate-limiter.ts`): sliding window 5 submissions per 10s per handle, returns clean GraphQL errors.
+  - Implemented `KafkaBridge` (`services/gateway/src/kafka-bridge.ts`): unique per-instance consumer group (`gateway-${HOSTNAME}-${RAND}`), `fromBeginning: false`, subscribing to `submissions.results` and dispatching into per-submission EventEmitter.
+  - Implemented GraphQL resolvers (`services/gateway/src/resolvers.ts`): Query (`problem`, `problems`, `submission`, `submissions`), Mutation (`submitSolution`), and Subscription (`submissionProgress` subscribes to Kafka bus first, reads gRPC snapshot, deduplicates `(type, testIndex)`, and terminates upon `FINAL_VERDICT`).
+  - Implemented AST depth limit validation (`services/gateway/src/validation.ts`): maximum query depth 6.
+  - Implemented GraphQL Yoga HTTP server (`services/gateway/src/server.ts`): 128 KB max request body returning status 413, serving `/graphql` with live SSE subscriptions.
+  - Created multi-stage Dockerfile and registered `gateway` service in `docker-compose.yml` on port 4000.
+  - Added full Phase 6 integration test suite `tests/gateway.test.ts`.
+- Verified with:
+  - `npx tsx scripts/demo-sse.ts`:
+    - Submitted `sum-two` solution via GraphQL mutation, received submission ID.
+    - Connected to live SSE stream, streamed `JUDGING_STARTED` -> `TEST_RESULT` (tests 1 to 5) -> `FINAL_VERDICT` (`ACCEPTED`).
+    - Stream closed immediately after `FINAL_VERDICT`.
+  - `curl` verification:
+    - Replay verification: Subscribed to completed submission; snapshot replayed all test results and closed immediately.
+    - Depth limit verification: Query exceeding depth 6 rejected with `Query depth 7 exceeds maximum allowed depth of 6`.
+    - Payload size verification: 130 KB body rejected with HTTP 413 `Request body exceeds 128KB limit`.
+    - Rate limiter verification: 6th rapid submission rejected with rate limit error.
+  - `npx vitest run tests/gateway.test.ts`: Passed all 7 tests.
+  - `npx vitest run`: All 6 test suites (32 tests) passed repo-wide in 56.78s.
+  - `npm run typecheck` and `npm run lint`: 0 errors.
+- Next:
+  - Phase 7: Crash recovery and hardening (`PLAN.md`).
+
+### Session 8 (2026-10-04) — Phase 7: Crash Recovery and Hardening
+- Did:
+  - Reduced runner consumer `sessionTimeout` to 10s (`RUNNER_SESSION_TIMEOUT_MS=10000`) in `.env` and `.env.example`.
+  - Implemented 5 chaos scenarios and automated test scripts in `scripts/chaos/` (with both `.ts` implementations and `.sh` cross-platform wrappers):
+    1. `kill-runner.ts` / `kill-runner.sh`: Submits a delayed Python solution (`sum-two`), detects `JUDGING` state, kills runner container via `SIGKILL` (`docker compose kill runner`), restarts runner, and confirms message is redelivered without committed offset, re-judged cleanly, resulting in exactly 1 submission row and 5 test results with 0 duplicates.
+    2. `kill-publisher.ts` / `kill-publisher.sh`: Stops outbox publisher (`docker compose stop outbox-publisher`), creates submission via gRPC, verifies row stays `QUEUED` with unpublished outbox row, restarts publisher (`docker compose start outbox-publisher`), and confirms publisher drains outbox and submission completes.
+    3. `kafka-down.ts` / `kafka-down.sh`: Stops Kafka container (`docker compose stop kafka`), submits 2 solutions via gRPC, confirms submissions succeed atomically in PostgreSQL while Kafka is down, starts Kafka, verifies broker recovery, and confirms both submissions are drained, judged, and completed with 5 test results each.
+    4. `duplicate-delivery.ts` / `duplicate-delivery.sh`: Completes submission, publishes duplicate `SUBMISSION_QUEUED` event directly to Kafka, publishes duplicate `TEST_RESULT` and conflicting `FINAL_VERDICT` events, verifies runner commits offset without re-running containers (`alreadyFinal`), and verifies PostgreSQL state and timestamps remain completely unchanged.
+    5. `dlq-failure.ts` / `dlq-failure.sh`: Simulates unrecoverable Docker daemon failure using an unreachable socket, verifies runner retries 3 times with exponential backoff (1s, 2s) and heartbeat, routes message to `submissions.dlq`, publishes `FINAL_VERDICT` with `INTERNAL_ERROR`, and result-writer records `status = SYSTEM_ERROR`, `verdict = INTERNAL_ERROR`.
+  - Created master orchestrator `scripts/chaos/run-all.ts` and `scripts/chaos/run-all.sh` with executive summary table and container cleanup.
+- Verified with:
+  - `npx tsx scripts/chaos/run-all.ts`:
+    - Runner Mid-Judging Crash & Recovery: `[PASS]` (recovery time: 18.3s)
+    - Outbox Publisher Crash & Drain: `[PASS]`
+    - Kafka Broker Outage Tolerance: `[PASS]`
+    - Duplicate Delivery & Idempotency: `[PASS]`
+    - Infrastructure Failure & DLQ Routing: `[PASS]`
+  - `npx vitest run`: All 6 test suites (32 tests) passed cleanly in 55.70s.
+  - `npm run typecheck` and `npm run lint`: 0 errors.
+- Problems / decisions:
+  - Diagnosed and fixed early `process.exit(0)` inside `try` blocks in chaos scripts which bypassed `finally` cleanup in Node.js; refactored all chaos scripts to track exit status and invoke `process.exit` only after `finally` completes so Docker containers and DB/Kafka connections are always cleanly restored.
+- Next:
+  - Phase 8: CI, benchmarks, docs, demo (`PLAN.md`).
+
+### Session 9 (2026-10-05) — Phase 8: CI, Benchmarks, Docs, Demo
+- Did:
+  - Configured GitHub Actions CI workflow in `.github/workflows/ci.yml` covering lint, typecheck, unit tests (`vitest run`), Docker Compose startup, smoke verification (`bash scripts/smoke.sh`), and the full chaos test suite (`bash scripts/chaos/run-all.sh`).
+  - Created benchmark load generator in `scripts/bench/benchmark.ts` and bash runner wrapper in `scripts/bench/run.sh`.
+  - Executed benchmark with 50 concurrent submissions (concurrency 5, 250 sandbox containers) against `sum-two` (Python).
+  - Measured latency distribution (min: 4,310ms, mean: 18,261ms, p50: 18,340ms, p90: 24,638ms, p95: 27,284ms, max: 33,398ms), throughput (0.26 submissions/sec, ~1.30 container executions/sec), and 100% success rate (50/50 completed, 0 failed).
+  - Executed and verified `scripts/demo-sse.ts`: confirmed live SSE stream connects to GraphQL, pushes events sequentially (`JUDGING_STARTED`, `TEST_RESULT` 1-5, `FINAL_VERDICT`), and cleanly terminates on complete.
+  - Executed and verified `scripts/smoke.ts`: 4/4 submissions verified with 100% correct verdicts (`ACCEPTED`, `WRONG_ANSWER`, `TIME_LIMIT_EXCEEDED`, `RUNTIME_ERROR`).
+  - Ran vitest across all 6 test suites (32 tests): 100% passed in 75.34s.
+  - Ran typecheck and lint: 0 errors, 0 warnings.
+  - Wrote comprehensive production-ready `README.md` containing architecture diagram, single-command quickstart, API usage examples with GraphQL/SSE queries, complete 10-point Docker sandbox security isolation model and boundary limits, reliability semantics, chaos test summary table, and strictly measured performance numbers.
+- Verified with:
+  - `npx tsx scripts/bench/benchmark.ts --total 50 --concurrency 5 --problem sum-two --language PYTHON`: Completed 50/50 in 191.66s with 0 errors.
+  - `npx tsx scripts/demo-sse.ts`: Streamed all events cleanly and closed.
+  - `npx tsx scripts/smoke.ts`: 4/4 cases passed.
+  - `npx vitest run`: 6 test files passed, 32 tests passed.
+  - `npm run typecheck` and `npm run lint`: 0 errors.
+- Completed:
+  - ByteArena is 100% feature complete across all 8 phases!
 
 ## Measured numbers (only real, measured values)
 
 | Metric | Value | How measured | Machine |
 |---|---|---|---|
-| Judge latency p50 (sum-two, Python) | - | - | - |
-| Judge latency p95 | - | - | - |
-| Throughput | - | - | - |
-| Recovery time after runner kill | - | - | - |
+| Judge latency p50 (sum-two, Python) | 18,340ms | `scripts/bench/benchmark.ts` (50 submissions, concurrency 5, 5 tests each) | AMD Ryzen 7 260 w/ Radeon 780M (16 vCPUs), 23.1GB RAM, Windows 11 (x64), Docker Desktop WSL2 |
+| Judge latency p95 | 27,284ms | `scripts/bench/benchmark.ts` (50 submissions, concurrency 5, 5 tests each) | AMD Ryzen 7 260 w/ Radeon 780M (16 vCPUs), 23.1GB RAM, Windows 11 (x64), Docker Desktop WSL2 |
+| Judge latency min | 4,310ms | `scripts/bench/benchmark.ts` (single submission through full pipeline: ~860ms/container) | AMD Ryzen 7 260 w/ Radeon 780M (16 vCPUs), 23.1GB RAM, Windows 11 (x64), Docker Desktop WSL2 |
+| Throughput | 0.26 sub/s | `scripts/bench/benchmark.ts` (50 submissions, concurrency 5, 5 tests each; ~1.30 sandbox containers/s) | AMD Ryzen 7 260 w/ Radeon 780M (16 vCPUs), 23.1GB RAM, Windows 11 (x64), Docker Desktop WSL2 |
+| Recovery time after runner kill | 18.3s | `scripts/chaos/kill-runner.ts` (kill mid-judging via SIGKILL, restart, 10s sessionTimeout rebalance, full 5-test rerun) | AMD Ryzen 7 260 w/ Radeon 780M (16 vCPUs), 23.1GB RAM, Windows 11 (x64), Docker Desktop WSL2 |
+
+

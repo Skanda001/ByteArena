@@ -138,6 +138,22 @@ services:
       kafka-init:
         condition: service_completed_successfully
 
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      SUBMISSION_GRPC_ADDR: "submission-api:50051"
+      KAFKA_BROKERS: "kafka:9092"
+      GATEWAY_PORT: "4000"
+    depends_on:
+      submission-api:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:
 
